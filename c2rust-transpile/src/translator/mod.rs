@@ -226,11 +226,11 @@ impl FuncContext {
     }
 
     pub fn get_name(&self) -> &str {
-        return self.name.as_ref().unwrap();
+        self.name.as_ref().unwrap()
     }
 
     pub fn get_va_list_arg_name(&self) -> &str {
-        return self.va_list_arg_name.as_ref().unwrap();
+        self.va_list_arg_name.as_ref().unwrap()
     }
 }
 
@@ -290,7 +290,7 @@ fn int_arg_metaitem(name: &str, arg: u128) -> NestedMeta {
         path: mk().path(name),
         paren_token: Default::default(),
         nested: FromIterator::from_iter(
-            vec![mk().nested_meta_item(NestedMeta::Lit(lit))].into_iter(),
+            vec![mk().nested_meta_item(NestedMeta::Lit(lit))],
         ),
     });
     NestedMeta::Meta(inner)
@@ -449,8 +449,7 @@ fn clean_path(mod_names: &RefCell<IndexMap<String, PathBuf>>, path: Option<&path
             .unwrap()
             .to_str()
             .unwrap()
-            .replace('.', "_")
-            .replace('-', "_")
+            .replace(['.', '-'], "_")
     }
 
     let mut file_path: String = path.map_or("internal".to_string(), path_to_str);
@@ -669,7 +668,7 @@ pub fn translate(
                 t.cur_file.borrow_mut().take();
 
                 if t.tcfg.reorganize_definitions
-                    && decl_file_id.map_or(false, |id| id != t.main_file)
+                    && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(decl_id, decl_file_id);
                 }
@@ -712,7 +711,7 @@ pub fn translate(
                 let decl_file_id = t.ast_context.file_id(decl);
 
                 if t.tcfg.reorganize_definitions
-                    && decl_file_id.map_or(false, |id| id != t.main_file)
+                    && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     *t.cur_file.borrow_mut() = decl_file_id;
                 }
@@ -756,7 +755,7 @@ pub fn translate(
                 t.cur_file.borrow_mut().take();
 
                 if t.tcfg.reorganize_definitions
-                    && decl_file_id.map_or(false, |id| id != t.main_file)
+                    && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(*top_id, decl_file_id);
                 }
@@ -1263,7 +1262,7 @@ impl<'c> Translation<'c> {
         let mut item_stores = self.items.borrow_mut();
         let item_store = item_stores
             .entry(Self::cur_file(self))
-            .or_insert_with(ItemStore::new);
+            .or_default();
         f(item_store)
     }
 
@@ -3347,7 +3346,7 @@ impl<'c> Translation<'c> {
                 // need to cast it to fn() to ensure that it has a real address.
                 let mut set_unsafe = false;
                 if ctx.needs_address() {
-                    if let &CDeclKind::Function { ref parameters, .. } = decl {
+                    if let CDeclKind::Function { parameters, .. } = decl {
                         let ty = self.convert_type(qual_ty.ctype)?;
                         let actual_ty = self
                             .type_converter
@@ -4724,6 +4723,7 @@ impl<'c> Translation<'c> {
     }
 
     /// Convert a boolean expression to a boolean for use in && or || or if
+    #[allow(clippy::collapsible_match)]
     fn match_bool(&self, target: bool, ty_id: CTypeId, val: Box<Expr>) -> Box<Expr> {
         let ty = &self.ast_context.resolve_type(ty_id).kind;
 
@@ -4819,7 +4819,7 @@ impl<'c> Translation<'c> {
             let mut item_stores = self.items.borrow_mut();
             let items = item_stores
                 .entry(decl_file_id.unwrap())
-                .or_insert(ItemStore::new());
+                .or_default();
 
             items.add_item(item);
         } else {
@@ -4840,7 +4840,7 @@ impl<'c> Translation<'c> {
             let mut items = self.items.borrow_mut();
             let mod_block_items = items
                 .entry(decl_file_id.unwrap())
-                .or_insert(ItemStore::new());
+                .or_default();
 
             mod_block_items.add_foreign_item(item);
         } else {
@@ -4855,7 +4855,7 @@ impl<'c> Translation<'c> {
         // If the definition lives in the same header, there is no need to import it
         // in fact, this would be a hard rust error.
         // We should never import into the main module here, as that happens in make_submodule
-        if import_file_id.map_or(false, |path| path == decl_file_id)
+        if (import_file_id == Some(decl_file_id))
             || decl_file_id == self.main_file
         {
             return;
@@ -4877,7 +4877,7 @@ impl<'c> Translation<'c> {
         self.items
             .borrow_mut()
             .entry(decl_file_id)
-            .or_insert(ItemStore::new())
+            .or_default()
             .add_use(module_path, ident_name);
     }
 

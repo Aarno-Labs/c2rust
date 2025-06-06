@@ -1,4 +1,5 @@
 #![deny(missing_docs)]
+#![allow(clippy::to_string_trait_impl)]
 //! This module provides basic support for converting inline assembly statements.
 
 use crate::diagnostics::TranslationResult;
@@ -134,7 +135,7 @@ fn parse_constraints(
     }
 
     // Handle register names
-    let mut constraints = constraints.replace('{', "\"").replace('}', "\"");
+    let mut constraints = constraints.replace(['{', '}'], "\"");
 
     // Convert (simple) constraints to ones rustc understands
     match &*constraints {
@@ -629,7 +630,7 @@ fn rewrite_asm<F: Fn(&str) -> bool, M: Fn(usize) -> usize>(
     Ok(out)
 }
 
-impl<'c> Translation<'c> {
+impl Translation<'_> {
     /// Convert an inline-assembly statement into one or more Rust statements.
     /// If inline assembly translation is not enabled this will result in an
     /// error message instead of a conversion. Because the inline assembly syntax
@@ -675,8 +676,8 @@ impl<'c> Translation<'c> {
         let mut tied_operands = HashMap::new();
         for (
             input_idx,
-            &AsmOperand {
-                ref constraints, ..
+            AsmOperand {
+                constraints, ..
             },
         ) in inputs.iter().enumerate()
         {
@@ -1010,7 +1011,7 @@ impl<'c> Translation<'c> {
         stmts.push(mac);
 
         // Push the post-macro statements
-        stmts.extend(post_stmts.into_iter());
+        stmts.extend(post_stmts);
 
         Ok(stmts)
     }
