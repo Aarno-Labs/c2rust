@@ -269,7 +269,7 @@ impl Translation<'_> {
                             .map(to_array_element)
                             .chain(
                                 // Pad out the array literal with default values to the desired size
-                                iter::repeat(self.implicit_default_expr(ty, ctx.is_static))
+                                std::iter::repeat(self.implicit_default_expr(ty, ctx.is_static))
                                     .take(n - ids.len()),
                             )
                             .collect::<TranslationResult<WithStmts<_>>>()?
