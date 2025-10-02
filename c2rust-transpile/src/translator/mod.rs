@@ -660,8 +660,7 @@ pub fn translate(
                 }
                 t.cur_file.take();
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(decl_id, decl_file_id);
                 }
@@ -702,8 +701,7 @@ pub fn translate(
                 let decl = t.ast_context.get_decl(top_id).unwrap();
                 let decl_file_id = t.ast_context.file_id(decl);
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.cur_file.set(decl_file_id);
                 }
@@ -740,8 +738,7 @@ pub fn translate(
                 }
                 t.cur_file.take();
 
-                if t.tcfg.reorganize_definitions
-                    && decl_file_id.is_some_and(|id| id != t.main_file)
+                if t.tcfg.reorganize_definitions && decl_file_id.is_some_and(|id| id != t.main_file)
                 {
                     t.generate_submodule_imports(*top_id, decl_file_id);
                 }
@@ -5116,9 +5113,7 @@ impl<'c> Translation<'c> {
         // If the definition lives in the same header, there is no need to import it
         // in fact, this would be a hard rust error.
         // We should never import into the main module here, as that happens in make_submodule
-        if (import_file_id == Some(decl_file_id))
-            || decl_file_id == self.main_file
-        {
+        if (import_file_id == Some(decl_file_id)) || decl_file_id == self.main_file {
             return;
         }
 
