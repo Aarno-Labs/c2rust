@@ -1,6 +1,7 @@
 use std::env::current_dir;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 use c2rust_transpile::{ReplaceMode, TranspilerConfig};
@@ -16,10 +17,14 @@ fn config() -> TranspilerConfig {
         dump_structures: false,
         verbose: false,
         debug_ast_exporter: false,
+        emit_c_decl_map: false,
         incremental_relooper: true,
         fail_on_multiple: false,
         filter: None,
         debug_relooper_labels: false,
+        cross_checks: false,
+        cross_check_backend: Default::default(),
+        cross_check_configs: Default::default(),
         prefix_function_names: None,
         translate_asm: true,
         use_c_loop_info: true,
@@ -38,11 +43,18 @@ fn config() -> TranspilerConfig {
         output_dir: None,
         translate_const_macros: Default::default(),
         translate_fn_macros: Default::default(),
+        disable_rustfmt: false,
         disable_refactoring: false,
         preserve_unused_functions: false,
         log_level: log::LevelFilter::Warn,
         emit_build_files: false,
         binaries: Vec::new(),
+        c2rust_dir: Some(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        ),
     }
 }
 
@@ -90,14 +102,11 @@ fn transpile(platform: Option<&str>, c_path: &Path) {
 
     let edition = "2021";
 
-    let status = Command::new("rustfmt")
-        .args(["--edition", edition])
-        .arg(&rs_path)
-        .status();
-    assert!(status.unwrap().success());
-
     let rs = fs::read_to_string(&rs_path).unwrap();
     let debug_expr = format!("cat {}", rs_path.display());
+
+    // Replace real paths with placeholders
+    let rs = rs.replace(cwd.to_str().unwrap(), ".");
 
     let snapshot_name = match platform {
         None => "transpile".into(),
