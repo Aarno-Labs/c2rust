@@ -31,11 +31,12 @@ impl Translation<'_> {
     }
 
     /// Return whether the literal can be directly translated as this type.
-    pub fn literal_matches_ty(&self, lit: &CLiteral, ty: CQualTypeId) -> bool {
+    pub fn literal_matches_ty(&self, lit: &CLiteral, ty: CQualTypeId, is_negated: bool) -> bool {
         let ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
         match *lit {
             CLiteral::Integer(value, _) if ty_kind.is_integral_type() && !ty_kind.is_bool() => {
                 ty_kind.guaranteed_integer_in_range(value)
+                    && (!is_negated || ty_kind.is_signed_integral_type())
             }
             // `convert_literal` always casts these to i32.
             CLiteral::Character(_value) => matches!(ty_kind, CTypeKind::Int32),
@@ -118,16 +119,29 @@ impl Translation<'_> {
 
                 if ctx.needs_address && element_size == 1 {
                     // Unlike in C, Rust string literals are already references by default.
-                    // So if the address needs to be taken, just make a bare literal.
+                    // So if the address needs to be taken, just make a bare literal and let
+                    // `convert_address_of_common` cast it to the appropriate type.
+                    // Strings with element_size > 1 cannot be cast from a byte literal for
+                    // alignment reasons, and need a transmute.
                     Ok(WithStmts::new_val(val))
                 } else {
                     // std::mem::transmute::<[u8; size], ctype>(*b"xxxx")
                     let array_ty = mk().array_ty(mk().ident_ty("u8"), mk().lit_expr(len as u128));
-                    let val = transmute_expr(
+                    let mut val = transmute_expr(
                         array_ty,
                         self.convert_type(ty.ctype)?,
                         mk().unary_expr(UnOp::Deref(Default::default()), val),
                     );
+
+                    // A transmute creates a temporary, which cannot have its address taken without
+                    // creating dangling pointers. Wrap it inside an inline `const` block, so that
+                    // it will be const-promoted to 'static.
+                    if ctx.needs_address {
+                        self.use_feature("inline_const");
+                        let stmts = vec![mk().expr_stmt(val)];
+                        val = mk().const_block_expr(mk().const_block(stmts));
+                    }
+
                     Ok(WithStmts::new_unsafe_val(val))
                 }
             }
@@ -252,20 +266,15 @@ impl Translation<'_> {
             CTypeKind::Union(union_id) => {
                 self.convert_union_literal(ctx, union_id, ids.as_ref(), ty, opt_union_field_id)
             }
-            CTypeKind::Pointer(_) => {
-                let id = ids.first().unwrap();
-                self.convert_expr(ctx.used(), *id, None)
-            }
-            CTypeKind::Enum(_) => {
-                let id = ids.first().unwrap();
-                self.convert_expr(ctx.used(), *id, None)
-            }
             CTypeKind::Vector(CQualTypeId { ctype, .. }, len) => {
                 self.vector_list_initializer(ctx, ids, ctype, len)
             }
-            ref kind if kind.is_integral_type() => {
-                let id = ids.first().unwrap();
-                self.convert_expr(ctx.used(), *id, None)
+            ref kind if kind.is_scalar() => {
+                if let Some(&first) = ids.first() {
+                    self.convert_expr(ctx.used(), first, None)
+                } else {
+                    self.implicit_default_expr(ctx.used(), ty.ctype)
+                }
             }
             ref t => Err(format_err!("Init list not implemented for {:?}", t).into()),
         }

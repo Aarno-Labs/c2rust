@@ -3,6 +3,7 @@ source: c2rust-transpile/tests/snapshots.rs
 expression: cat tests/snapshots/empty_init.2021.rs
 ---
 #![allow(
+    clippy::missing_safety_doc,
     dead_code,
     non_camel_case_types,
     non_snake_case,
@@ -15,7 +16,17 @@ expression: cat tests/snapshots/empty_init.2021.rs
 pub struct Scope {
     pub next: *mut Scope,
 }
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct Foo_s {
+    pub x: ::core::ffi::c_int,
+}
+pub type Foo_t = Foo_s;
 #[no_mangle]
 pub static mut scope: *mut Scope = &Scope {
-    next: ::core::ptr::null::<Scope>() as *mut Scope,
+    next: ::core::ptr::null_mut::<Scope>(),
 } as *const Scope as *mut Scope;
+#[no_mangle]
+pub unsafe extern "C" fn foo() {
+    let mut f: Foo_t = Foo_t { x: 0 };
+}

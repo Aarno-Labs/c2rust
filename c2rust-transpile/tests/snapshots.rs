@@ -103,6 +103,7 @@ fn transpile_snapshot(
     c_path: &Path,
     edition: RustEdition,
     expect_compile_error: bool,
+    imported_crates: &[&str],
 ) {
     let cfg = config(edition);
     compile_and_transpile_file(c_path, cfg);
@@ -135,21 +136,11 @@ fn transpile_snapshot(
 
     insta::assert_snapshot!(snapshot_name, &rs, &debug_expr);
 
-    // Using rustc itself to build snapshots that reference libc is difficult because we don't know
-    // the appropriate --extern libc=/path/to/liblibc-XXXXXXXXXXXXXXXX.rlib to pass. Skip for now,
-    // as we've already compared the literal text.
-    if rs.contains("libc::") {
-        eprintln!(
-            "warning: skipping compiling {} with rustc since it depends on libc",
-            rs_path.display()
-        );
-        return;
-    }
-
     rustc(&rs_path)
         .edition(edition)
         .crate_name(crate_name)
         .expect_error(expect_compile_error)
+        .expect_unresolved_imports(imported_crates)
         .run();
 }
 
@@ -160,6 +151,7 @@ struct TranspileTest<'a> {
     os_specific: bool,
     expect_compile_error_edition_2021: bool,
     expect_compile_error_edition_2024: bool,
+    imported_crates: Vec<&'a str>,
 }
 
 fn transpile(c_file_name: &str) -> TranspileTest {
@@ -169,6 +161,7 @@ fn transpile(c_file_name: &str) -> TranspileTest {
         os_specific: false,
         expect_compile_error_edition_2021: false,
         expect_compile_error_edition_2024: false,
+        imported_crates: Default::default(),
     }
 }
 
@@ -213,6 +206,11 @@ impl<'a> TranspileTest<'a> {
             .expect_compile_error_edition_2024(expect_error)
     }
 
+    pub fn expect_unresolved_import(mut self, imported_crate: &'a str) -> Self {
+        self.imported_crates.push(imported_crate);
+        self
+    }
+
     pub fn run(self) {
         let Self {
             c_file_name,
@@ -220,6 +218,7 @@ impl<'a> TranspileTest<'a> {
             os_specific,
             expect_compile_error_edition_2021,
             expect_compile_error_edition_2024,
+            imported_crates,
         } = self;
 
         let specific_dir_prefix = [arch_specific.then_some("arch"), os_specific.then_some("os")]
@@ -270,12 +269,14 @@ impl<'a> TranspileTest<'a> {
             &c_path,
             Edition2021,
             expect_compile_error_edition_2021,
+            &imported_crates,
         );
         transpile_snapshot(
             &platform,
             &c_path,
             Edition2024,
             expect_compile_error_edition_2024,
+            &imported_crates,
         );
     }
 }
@@ -311,6 +312,11 @@ fn test_arrays() {
 #[test]
 fn test_atomics() {
     transpile("atomics.c").run();
+}
+
+#[test]
+fn test_bitfields() {
+    transpile("bitfields.c").expect_compile_error(true).run();
 }
 
 #[test]
@@ -405,6 +411,13 @@ fn test_rotate() {
 }
 
 #[test]
+fn test_scalar_init() {
+    transpile("scalar_init.c")
+        .expect_unresolved_import("f128")
+        .run();
+}
+
+#[test]
 fn test_static_assert() {
     transpile("static_assert.c").run();
 }
@@ -422,6 +435,17 @@ fn test_volatile() {
 // arch-specific
 
 #[test]
+fn test_asm() {
+    #[cfg(target_arch = "x86_64")]
+    transpile("asm.c")
+        .arch_specific(true)
+        .expect_unresolved_import("c2rust_asm_casts")
+        .run();
+    #[cfg(not(target_arch = "x86_64"))]
+    transpile("asm.c").arch_specific(true).run();
+}
+
+#[test]
 fn test_spin() {
     transpile("spin.c").arch_specific(true).run();
 }
@@ -436,6 +460,15 @@ fn test_vm_x86() {
 #[test]
 fn test_call_only_once() {
     transpile("call_only_once.c").os_specific(true).run();
+}
+
+#[test]
+fn test_f128() {
+    transpile("f128.c")
+        .expect_unresolved_import("f128")
+        .expect_unresolved_import("num_traits")
+        .os_specific(true)
+        .run();
 }
 
 #[test]
@@ -460,7 +493,10 @@ fn test_rotate_os_specific() {
 
 #[test]
 fn test_sigign() {
-    transpile("sigign.c").os_specific(true).run();
+    transpile("sigign.c")
+        .os_specific(true)
+        .expect_unresolved_import("libc")
+        .run();
 }
 
 #[test]
@@ -470,12 +506,18 @@ fn test_typedefidx() {
 
 #[test]
 fn test_types() {
-    transpile("types.c").os_specific(true).run();
+    transpile("types.c")
+        .os_specific(true)
+        .expect_unresolved_import("libc")
+        .run();
 }
 
 #[test]
 fn test_wide_strings() {
-    transpile("wide_strings.c").os_specific(true).run();
+    transpile("wide_strings.c")
+        .os_specific(true)
+        .expect_unresolved_import("libc")
+        .run();
 }
 
 // arch-os-specific

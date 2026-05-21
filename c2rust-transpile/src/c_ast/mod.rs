@@ -743,6 +743,24 @@ impl TypedAstContext {
         self.index(resolved_typ_id)
     }
 
+    pub fn resolve_type_id_no_typedef(&self, typ: CTypeId) -> CTypeId {
+        use CTypeKind::*;
+        let ty = match self.index(typ).kind {
+            Attributed(ty, _) => ty.ctype,
+            Elaborated(ty) => ty,
+            Decayed(ty) => ty,
+            TypeOf(ty) => ty,
+            Paren(ty) => ty,
+            _ => return typ,
+        };
+        self.resolve_type_id_no_typedef(ty)
+    }
+
+    pub fn resolve_type_no_typedef(&self, typ: CTypeId) -> &CType {
+        let resolved_typ_id = self.resolve_type_id_no_typedef(typ);
+        self.index(resolved_typ_id)
+    }
+
     /// Extract decl of referenced function.
     /// Looks for ImplicitCast(FunctionToPointerDecay, DeclRef(function_decl))
     pub fn fn_declref_decl(&self, func_expr: CExprId) -> Option<&CDeclKind> {
@@ -996,6 +1014,54 @@ impl TypedAstContext {
         }
     }
 
+    /// Identifies typedefs that name unnamed types.
+    /// Later, the two declarations can be collapsed into a single name and declaration,
+    /// eliminating the typedef altogether.
+    pub fn set_prenamed_decls(&mut self) {
+        let mut prenamed_decls: IndexMap<CDeclId, CDeclId> = IndexMap::new();
+
+        for (&decl_id, decl) in self.iter_decls() {
+            if let CDeclKind::Typedef { ref name, typ, .. } = decl.kind {
+                if let Some(subdecl_id) = self.resolve_type(typ.ctype).kind.as_underlying_decl() {
+                    use CDeclKind::*;
+                    let is_unnamed = match self[subdecl_id].kind {
+                        Struct { name: None, .. }
+                        | Union { name: None, .. }
+                        | Enum { name: None, .. } => true,
+
+                        // Detect case where typedef and struct share the same name.
+                        // In this case the purpose of the typedef was simply to eliminate
+                        // the need for the 'struct' tag when referring to the type name.
+                        Struct {
+                            name: Some(ref target_name),
+                            ..
+                        }
+                        | Union {
+                            name: Some(ref target_name),
+                            ..
+                        }
+                        | Enum {
+                            name: Some(ref target_name),
+                            ..
+                        } => name == target_name,
+
+                        _ => false,
+                    };
+
+                    if is_unnamed
+                        && !prenamed_decls
+                            .values()
+                            .any(|decl_id| *decl_id == subdecl_id)
+                    {
+                        prenamed_decls.insert(decl_id, subdecl_id);
+                    }
+                }
+            }
+        }
+
+        self.prenamed_decls = prenamed_decls;
+    }
+
     pub fn prune_unwanted_decls(&mut self, want_unused_functions: bool) {
         // Starting from a set of root declarations, walk each one to find declarations it
         // depends on. Then walk each of those, recursively.
@@ -1105,19 +1171,20 @@ impl TypedAstContext {
             }
         }
 
-        // Unset c_main if we are not retaining its declaration
-        if let Some(main_id) = self.c_main {
-            if !wanted.contains(&main_id) {
-                self.c_main = None;
-            }
-        }
-
         // Prune any declaration that isn't considered live
         self.c_decls
             .retain(|&decl_id, _decl| wanted.contains(&decl_id));
 
-        // Prune top declarations that are not considered live
-        self.c_decls_top.retain(|x| wanted.contains(x));
+        // Remove references to removed decls that are held elsewhere.
+        self.c_decls_top.retain(|x| self.c_decls.contains_key(x));
+        self.prenamed_decls
+            .retain(|x, _| self.c_decls.contains_key(x));
+
+        if let Some(main_id) = self.c_main {
+            if !self.c_decls.contains_key(&main_id) {
+                self.c_main = None;
+            }
+        }
     }
 
     /// Bubble types of unary and binary operators up from their args into the expression type.
@@ -1794,6 +1861,10 @@ pub enum CastKind {
 
 impl CastKind {
     pub fn from_types(source_ty_kind: &CTypeKind, target_ty_kind: &CTypeKind) -> Option<Self> {
+        if source_ty_kind == target_ty_kind {
+            return Some(CastKind::NoOp);
+        }
+
         Some(match (source_ty_kind, target_ty_kind) {
             (CTypeKind::VariableArray(..), CTypeKind::Pointer(..))
             | (CTypeKind::ConstantArray(..), CTypeKind::Pointer(..))
@@ -1803,17 +1874,17 @@ impl CastKind {
 
             (CTypeKind::Function(..), CTypeKind::Pointer(..)) => CastKind::FunctionToPointerDecay,
 
-            (_, CTypeKind::Pointer(..)) if source_ty_kind.is_integral_type() => {
+            (_, CTypeKind::Pointer(..)) if source_ty_kind.is_enum_or_integral_type() => {
                 CastKind::IntegralToPointer
             }
 
             (CTypeKind::Pointer(..), CTypeKind::Bool) => CastKind::PointerToBoolean,
 
-            (CTypeKind::Pointer(..), _) if target_ty_kind.is_integral_type() => {
+            (CTypeKind::Pointer(..), _) if target_ty_kind.is_enum_or_integral_type() => {
                 CastKind::PointerToIntegral
             }
 
-            (_, CTypeKind::Bool) if source_ty_kind.is_integral_type() => {
+            (_, CTypeKind::Bool) if source_ty_kind.is_enum_or_integral_type() => {
                 CastKind::IntegralToBoolean
             }
 
@@ -1821,11 +1892,17 @@ impl CastKind {
                 CastKind::BooleanToSignedIntegral
             }
 
-            (_, _) if source_ty_kind.is_integral_type() && target_ty_kind.is_integral_type() => {
+            (_, _)
+                if source_ty_kind.is_enum_or_integral_type()
+                    && target_ty_kind.is_enum_or_integral_type() =>
+            {
                 CastKind::IntegralCast
             }
 
-            (_, _) if source_ty_kind.is_integral_type() && target_ty_kind.is_floating_type() => {
+            (_, _)
+                if source_ty_kind.is_enum_or_integral_type()
+                    && target_ty_kind.is_floating_type() =>
+            {
                 CastKind::IntegralToFloating
             }
 
@@ -1833,7 +1910,10 @@ impl CastKind {
                 CastKind::FloatingToBoolean
             }
 
-            (_, _) if source_ty_kind.is_floating_type() && target_ty_kind.is_integral_type() => {
+            (_, _)
+                if source_ty_kind.is_floating_type()
+                    && target_ty_kind.is_enum_or_integral_type() =>
+            {
                 CastKind::FloatingToIntegral
             }
 
@@ -2684,6 +2764,10 @@ impl CTypeKind {
         matches!(*self, Self::Enum { .. })
     }
 
+    pub fn is_enum_or_integral_type(&self) -> bool {
+        self.is_integral_type() || self.is_enum()
+    }
+
     pub fn is_integral_type(&self) -> bool {
         self.is_unsigned_integral_type() || self.is_signed_integral_type()
     }
@@ -2737,6 +2821,10 @@ impl CTypeKind {
             self,
             Float | Double | LongDouble | Float128 | Half | BFloat16
         )
+    }
+
+    pub fn is_scalar(&self) -> bool {
+        self.is_integral_type() || self.is_floating_type() || self.is_enum() || self.is_pointer()
     }
 
     pub fn as_underlying_decl(&self) -> Option<CDeclId> {
