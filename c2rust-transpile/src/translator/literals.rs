@@ -34,12 +34,12 @@ impl Translation<'_> {
     pub fn literal_matches_ty(&self, lit: &CLiteral, ty: CQualTypeId, is_negated: bool) -> bool {
         let ty_kind = &self.ast_context.resolve_type(ty.ctype).kind;
         match *lit {
-            CLiteral::Integer(value, _) if ty_kind.is_integral_type() && !ty_kind.is_bool() => {
+            CLiteral::Integer(value, _) | CLiteral::Character(value)
+                if ty_kind.is_integral_type() && !ty_kind.is_bool() =>
+            {
                 ty_kind.guaranteed_integer_in_range(value)
                     && (!is_negated || ty_kind.is_signed_integral_type())
             }
-            // `convert_literal` always casts these to i32.
-            CLiteral::Character(_value) => matches!(ty_kind, CTypeKind::Int32),
             CLiteral::Floating(value, _) if ty_kind.is_floating_type() => {
                 ty_kind.guaranteed_float_in_range(value)
             }
@@ -61,25 +61,22 @@ impl Translation<'_> {
 
             CLiteral::Character(val) => {
                 let val = val as u32;
-                let expr =
-                    match char::from_u32(val) {
-                        Some(c) => {
-                            let expr = mk().lit_expr(c);
-                            let i32_type = mk().path_ty(vec!["i32"]);
-                            mk().cast_expr(expr, i32_type)
+                let expr = match char::from_u32(val) {
+                    Some(c) => mk().lit_expr(c),
+                    None => {
+                        // Fallback for characters outside of the valid Unicode range
+                        if (val as i32) < 0 {
+                            neg_expr(mk().lit_expr(
+                                mk().int_unsuffixed_lit((val as i32).unsigned_abs() as u128),
+                            ))
+                        } else {
+                            mk().lit_expr(mk().int_unsuffixed_lit(val as u128))
                         }
-                        None => {
-                            // Fallback for characters outside of the valid Unicode range
-                            if (val as i32) < 0 {
-                                neg_expr(mk().lit_expr(
-                                    mk().int_lit((val as i32).unsigned_abs() as u128, "i32"),
-                                ))
-                            } else {
-                                mk().lit_expr(mk().int_lit(val as u128, "i32"))
-                            }
-                        }
-                    };
-                Ok(WithStmts::new_val(expr))
+                    }
+                };
+
+                let type_rs = self.convert_type(ty.ctype)?;
+                Ok(WithStmts::new_val(mk().cast_expr(expr, type_rs)))
             }
 
             CLiteral::Floating(val, ref c_str) => {
@@ -156,6 +153,66 @@ impl Translation<'_> {
         bytes_padded.extend(bytes);
         bytes_padded.resize(size, 0);
         bytes_padded
+    }
+
+    /// Convert a C compound literal expression to a Rust expression.
+    pub fn convert_compound_literal(
+        &self,
+        ctx: ExprContext,
+        qty: CQualTypeId,
+        val: CExprId,
+        override_ty: Option<CQualTypeId>,
+    ) -> TranslationResult<WithStmts<Box<Expr>>> {
+        // C compound literals are lvalues, but equivalent Rust expressions generally are not.
+        // So if an address is needed, store it in an intermediate variable first.
+        if !ctx.needs_address() || ctx.expanding_macro.is_some() {
+            return self.convert_expr(ctx, val, override_ty);
+        }
+
+        let fresh_name = self.renamer.borrow_mut().fresh();
+        let fresh_ty = self.convert_type(override_ty.unwrap_or(qty).ctype)?;
+
+        // Translate the expression to be assigned to the fresh variable.
+        // It will be assigned by value, so we don't need its address anymore.
+        let val = self.convert_expr(ctx.set_needs_address(false), val, override_ty)?;
+
+        // If we are translating a static variable,
+        // then the fresh variable should also be static.
+        if ctx.is_static {
+            val.wrap_unsafe().and_then(|val| {
+                let item = mk().mutbl().static_item(&fresh_name, fresh_ty, val);
+                let fresh_stmt = mk().item_stmt(item);
+                let mut val = WithStmts::new(vec![fresh_stmt], mk().ident_expr(fresh_name));
+
+                // Accessing a static variable is unsafe.
+                // In the current nightly, this applies also to taking a raw pointer,
+                // but this requirement was removed in later versions of the
+                // `raw_ref_op` feature.
+                if self.tcfg.edition < Edition2024 {
+                    val.set_unsafe();
+                }
+
+                Ok(val)
+            })
+        } else {
+            val.and_then(|val| {
+                let mutbl = if qty.qualifiers.is_const {
+                    Mutability::Immutable
+                } else {
+                    Mutability::Mutable
+                };
+                let local = mk().local(
+                    mk().set_mutbl(mutbl).ident_pat(&fresh_name),
+                    Some(fresh_ty),
+                    Some(val),
+                );
+                let fresh_stmt = mk().local_stmt(Box::new(local));
+                Ok(WithStmts::new(
+                    vec![fresh_stmt],
+                    mk().ident_expr(fresh_name),
+                ))
+            })
+        }
     }
 
     /// Convert an initialization list into an expression. These initialization lists can be
