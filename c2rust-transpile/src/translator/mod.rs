@@ -2273,7 +2273,7 @@ impl<'c> Translation<'c> {
                     .get_type()
                     .ok_or_else(|| format_err!("bad pointer type for condition"))?;
 
-                val.result_map(|val| self.convert_pointer_is_null(ctx, ptr_type, val, is_null))
+                val.try_map(|val| self.convert_pointer_is_null(ctx, ptr_type, val, is_null))
             };
 
         match self.ast_context[cond_id].kind {
@@ -2321,7 +2321,7 @@ impl<'c> Translation<'c> {
                 // a ptr (rhs) (even though the reverse works!). We could also be smarter here and just
                 // specify Yes for that particular case, given enough analysis.
                 let val = self.convert_expr(ctx.used().decay_ref(), cond_id, None)?;
-                val.result_map(|e| self.match_bool(ctx, target, ty_id, e))
+                val.try_map(|e| self.match_bool(ctx, target, ty_id, e))
             }
         }
     }
@@ -2819,10 +2819,8 @@ impl<'c> Translation<'c> {
                                 Some(mk().cast_expr(expr, mk().path_ty(vec!["usize"]))),
                             );
 
-                            let res: TranslationResult<WithStmts<()>> =
-                                Ok(WithStmts::new(vec![mk().local_stmt(Box::new(local))], ()));
-                            res
-                        })?;
+                            WithStmts::new(vec![mk().local_stmt(Box::new(local))], ())
+                        });
 
                     stmts.extend(expr.into_stmts());
                 }
@@ -2845,7 +2843,7 @@ impl<'c> Translation<'c> {
             let len = len.expect("Sizeof a VLA type with count expression omitted");
 
             let elts = self.compute_size_of_type(ctx, elts, override_ty)?;
-            return elts.and_then(|lhs| {
+            return elts.and_then_try(|lhs| {
                 let len = self.convert_expr(ctx.used().not_static(), len, override_ty)?;
                 Ok(len.map(|len| {
                     let rhs = cast_int(len, "usize", true);
@@ -3355,12 +3353,12 @@ impl<'c> Translation<'c> {
                     let then = mk().block(lhs.into_stmts());
                     let else_ = mk().block_expr(mk().block(rhs.into_stmts()));
 
-                    let mut res = cond.and_then(|c| -> TranslationResult<_> {
-                        Ok(WithStmts::new(
+                    let mut res = cond.and_then(|c| {
+                        WithStmts::new(
                             vec![mk().semi_stmt(mk().ifte_expr(c, then, Some(else_)))],
                             self.panic_or_err("Conditional expression is not supposed to be used"),
-                        ))
-                    })?;
+                        )
+                    });
                     res.merge_unsafe(is_unsafe);
                     Ok(res)
                 } else {
@@ -3385,8 +3383,8 @@ impl<'c> Translation<'c> {
                     let rhs = self.convert_expr(ctx, rhs, None)?;
                     lhs.merge_unsafe(rhs.is_unsafe());
 
-                    lhs.and_then(|val| {
-                        Ok(WithStmts::new(
+                    Ok(lhs.and_then(|val| {
+                        WithStmts::new(
                             vec![mk().semi_stmt(mk().ifte_expr(
                                 val,
                                 mk().block(rhs.into_stmts()),
@@ -3395,10 +3393,10 @@ impl<'c> Translation<'c> {
                             self.panic_or_err(
                                 "Binary conditional expression is not supposed to be used",
                             ),
-                        ))
-                    })
+                        )
+                    }))
                 } else {
-                    self.name_reference_write_read(ctx, lhs)?.result_map(
+                    self.name_reference_write_read(ctx, lhs)?.try_map(
                         |NamedReference {
                              rvalue: lhs_val, ..
                          }| {
@@ -3516,12 +3514,9 @@ impl<'c> Translation<'c> {
         if ctx.is_unused() {
             // Recall that if `used` is false, the `stmts` field of the output must contain
             // all side-effects (and a function call can always have side-effects)
-            expr.and_then(|expr| {
-                Ok(WithStmts::new(
-                    vec![mk().semi_stmt(expr)],
-                    self.panic_or_err(panic_msg),
-                ))
-            })
+            Ok(expr.and_then(|expr| {
+                WithStmts::new(vec![mk().semi_stmt(expr)], self.panic_or_err(panic_msg))
+            }))
         } else {
             Ok(expr)
         }
@@ -3702,7 +3697,7 @@ impl<'c> Translation<'c> {
                     self.f128_cast_to(val, target_ty_kind)
                 } else if let &CTypeKind::Enum(enum_decl_id) = target_ty_kind {
                     // Casts targeting `enum` types...
-                    val.result_map(|val| {
+                    val.try_map(|val| {
                         self.convert_cast_to_enum(ctx, target_cty.ctype, enum_decl_id, expr, val)
                     })
                 } else if target_ty_kind.is_floating_type() && source_ty_kind.is_bool() {
@@ -3710,7 +3705,7 @@ impl<'c> Translation<'c> {
                         mk().cast_expr(mk().cast_expr(val, mk().path_ty(vec!["u8"])), target_ty)
                     }))
                 } else if let &CTypeKind::Enum(..) = source_ty_kind {
-                    val.result_map(|val| self.convert_cast_from_enum(target_cty.ctype, val))
+                    val.try_map(|val| self.convert_cast_from_enum(target_cty.ctype, val))
                 } else {
                     Ok(val.map(|val| mk().cast_expr(val, target_ty)))
                 }
@@ -3720,7 +3715,7 @@ impl<'c> Translation<'c> {
                 let mut val = if source_cty.qualifiers.is_volatile {
                     // If the expression is volatile and used as something that isn't an LValue,
                     // this constitutes a volatile read.
-                    val.result_map(|val| self.volatile_read(val, target_cty))?
+                    val.try_map(|val| self.volatile_read(val, target_cty))?
                 } else {
                     val
                 };
@@ -3754,7 +3749,7 @@ impl<'c> Translation<'c> {
             CastKind::IntegralToBoolean
             | CastKind::FloatingToBoolean
             | CastKind::PointerToBoolean => {
-                val.result_map(|e| self.match_bool(ctx, true, source_cty.ctype, e))
+                val.try_map(|e| self.match_bool(ctx, true, source_cty.ctype, e))
             }
 
             CastKind::FloatingRealToComplex
