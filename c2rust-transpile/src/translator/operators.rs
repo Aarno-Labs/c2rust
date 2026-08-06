@@ -211,14 +211,11 @@ impl Translation<'_> {
                 rhs,
             )))
         } else {
-            let lhs = self.convert_cast(
+            let lhs = self.make_cast(
                 ctx,
                 initial_lhs_type_id,
                 compute_lhs_type_id,
                 WithStmts::new_val(read.clone()),
-                None,
-                None,
-                None,
             )?;
 
             let ty = self.convert_type(compute_res_type_id.ctype)?;
@@ -234,8 +231,7 @@ impl Translation<'_> {
                 )
             })?;
 
-            let val =
-                self.convert_cast(ctx, compute_res_type_id, lhs_type_id, val, None, None, None)?;
+            let val = self.make_cast(ctx, compute_res_type_id, lhs_type_id, val)?;
 
             Ok(val.map(|val| mk().assign_expr(write.clone(), val)))
         }
@@ -423,14 +419,11 @@ impl Translation<'_> {
                         .underlying_assignment()
                         .expect("Cannot convert non-assignment operator");
 
-                    let lhs = self.convert_cast(
+                    let lhs = self.make_cast(
                         ctx,
                         initial_lhs_type_id,
                         expr_or_comp_type_id,
                         WithStmts::new_val(read.clone()),
-                        None,
-                        None,
-                        None,
                     )?;
 
                     let ty = self.convert_type(result_type_id.ctype)?;
@@ -446,14 +439,11 @@ impl Translation<'_> {
                         )
                     )?;
 
-                    let val = self.convert_cast(
+                    let val = self.make_cast(
                         ctx,
                         result_type_id,
                         expr_type_id,
                         val,
-                        None,
-                        None,
-                        None,
                     )?;
 
                     #[allow(clippy::let_and_return /* , reason = "block is large, so variable name helps" */)]
@@ -642,11 +632,7 @@ impl Translation<'_> {
 
         let one_type_id =
             if let CTypeKind::Pointer(..) = self.ast_context.resolve_type(arg_type.ctype).kind {
-                CQualTypeId::new(
-                    self.ast_context
-                        .type_for_kind(&CTypeKind::Int)
-                        .ok_or_else(|| format_err!("couldn't find type for CTypeKind::Int"))?,
-                )
+                CQualTypeId::new(self.ast_context.type_for_kind(&CTypeKind::Int))
             } else {
                 arg_type
             };
