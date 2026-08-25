@@ -10,6 +10,7 @@ impl Translation<'_> {
     /// Generate an integer literal corresponding to the given type, value, and base.
     pub fn mk_int_lit(
         &self,
+        ctx: ExprContext,
         ty: CQualTypeId,
         val: u64,
         base: IntBase,
@@ -35,7 +36,7 @@ impl Translation<'_> {
             expr = neg_expr(expr);
         }
 
-        Ok(if is_suffix {
+        Ok(if is_suffix || ctx.is_pattern {
             expr
         } else {
             mk().cast_expr(expr, target_ty)
@@ -67,13 +68,18 @@ impl Translation<'_> {
         lit: &CLiteral,
     ) -> TranslationResult<WithStmts<Box<Expr>>> {
         match *lit {
-            CLiteral::Integer(val, base) => {
-                Ok(WithStmts::new_val(self.mk_int_lit(ty, val, base, false)?))
-            }
+            CLiteral::Integer(val, base) => Ok(WithStmts::new_val(
+                self.mk_int_lit(ctx, ty, val, base, false)?,
+            )),
 
             CLiteral::Character(val) => {
                 let val = val as u32;
-                let expr = match char::from_u32(val) {
+                let mut expr = match char::from_u32(val).filter(|_| {
+                    // Always convert character literals as integers in patterns.
+                    // Character literals have problems with typing that need to be resolved. See
+                    // https://github.com/immunant/c2rust/issues/648
+                    !ctx.is_pattern
+                }) {
                     Some(c) => mk().lit_expr(c),
                     None => {
                         // Fallback for characters outside of the valid Unicode range
@@ -87,8 +93,12 @@ impl Translation<'_> {
                     }
                 };
 
-                let type_rs = self.convert_type(ty.ctype)?;
-                Ok(WithStmts::new_val(mk().cast_expr(expr, type_rs)))
+                if !ctx.is_pattern {
+                    let type_rs = self.convert_type(ty.ctype)?;
+                    expr = mk().cast_expr(expr, type_rs);
+                }
+
+                Ok(WithStmts::new_val(expr))
             }
 
             CLiteral::Floating(val, ref c_str) => {
@@ -122,6 +132,12 @@ impl Translation<'_> {
             }
 
             CLiteral::String(ref bytes, element_size) => {
+                if ctx.is_pattern {
+                    return Err(TranslationError::generic(
+                        "CLiteral::String is not supported in patterns",
+                    ));
+                }
+
                 let bytes_padded = self.string_literal_bytes(ty.ctype, bytes, element_size);
                 let len = bytes_padded.len();
                 let val = mk().lit_expr(bytes_padded);
